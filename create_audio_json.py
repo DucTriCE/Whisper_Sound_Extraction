@@ -1,5 +1,6 @@
-import torch
-torch.set_num_threads(1)
+import whisperx
+import gc 
+import json
 
 import os
 import json
@@ -8,15 +9,16 @@ from moviepy.editor import *
 from IPython.display import Audio
 from pprint import pprint
 
-from silero_vad import (load_silero_vad, read_audio, VADIterator)
-
-SAMPLING_RATE = 16000
+# PATH
 audio_path = 'audio_path'
 video_path = 'videos'
 audio_json_path = 'audio_json'
 
-whisper = pipeline("automatic-speech-recognition", model="openai/whisper-large-v2", device='cuda:0')
-model = load_silero_vad(onnx=False)
+device = "cuda" 
+batch_size = 32 # reduce if low on GPU mem
+compute_type = "float16" # change to "int8" if low on GPU mem (may reduce accuracy)
+
+model = whisperx.load_model("large-v2", device, compute_type=compute_type)
 videos = os.listdir(video_path)
 
 for vid in videos:
@@ -24,36 +26,14 @@ for vid in videos:
     audio_file = os.path.join(audio_path, vid).replace('mp4', 'wav')
     video.audio.write_audiofile(audio_file)
 
-    vad_iterator = VADIterator(model, sampling_rate=SAMPLING_RATE)
-    wav = read_audio(audio_file, sampling_rate=SAMPLING_RATE)
-
-    window_size_samples = 512
-    speech_segments = []
-    current_start = None
-
-    for i in range(0, len(wav), window_size_samples):
-        audio_chunk = wav[i: i + window_size_samples]
-        print(audio_chunk)
-        speech_dict = vad_iterator(audio_chunk, return_seconds=True)
-        if speech_dict:
-            if 'start' in speech_dict and current_start is None:
-                current_start = speech_dict['start']
-            elif 'end' in speech_dict and current_start is not None:
-                speech_segments.append({'start': current_start, 'end': speech_dict['end']})
-                current_start = None
-
-    vad_iterator.reset_states()
-
-    all_transcriptions = []
-    for segment in speech_segments:
-        start_time = segment['start']
-        end_time = segment['end']
-        transcription = whisper(audio_file, return_timestamps=True, task="transcribe", start=start_time, end=end_time)
-        all_transcriptions.append(transcription)
+    audio = whisperx.load_audio(audio_file)
+    result = model.transcribe(audio, batch_size=batch_size)
+    #Delete audio after processing
+    if os.path.isfile(audio_file):
+        os.remove(audio_file)
 
     json_file = os.path.join(audio_json_path, vid.replace('mp4', 'json'))
+    # print(result["segments"])
     with open(json_file, 'w', encoding='utf-8') as f:
-        json.dump(all_transcriptions, f, ensure_ascii=False, indent=4)
-
-    print(f"Transcription for {vid} saved to {json_file}")
-    break
+        json.dump(result['segments'], f, ensure_ascii=False, indent=4)
+        
